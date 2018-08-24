@@ -7,6 +7,10 @@ import (
   "fmt"
   "net/http"
   "html/template"
+  "os"
+  "encoding/json"
+  "log"
+  "io"
   )
 
 
@@ -24,12 +28,17 @@ URL: <input type="text" name="url">
 `
 
 var src = rand.NewSource(time.Now().UnixNano())
-var store = NewURLStore()
+var store = NewURLStore("store.json")
 //var templates = template.Must(template.ParseFiles("edit.html"))
 
 type URLStore struct {
   urls map[string]string
   mu sync.RWMutex
+  file *os.File
+}
+
+type record struct {
+  Key, URL string
 }
 
 func (urlStore *URLStore) Get(key string) string {
@@ -54,6 +63,9 @@ func (urlStore *URLStore) Put(url string) string {
   for {
     key := genKey(5)
     if urlStore.Set(key, url) {
+      if err := urlStore.save(key, url); err != nil {
+        log.Println("URLStore:", err)
+      }
       return key
     }
   }
@@ -78,20 +90,23 @@ func genKey(n int) string {
    return string(b)
 }
 
-func NewURLStore() *URLStore {
+func NewURLStore(filename string) *URLStore {
   u := &URLStore{urls:make(map[string]string)}
+  f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+  if err != nil {
+    log.Fatal("URLStore", err)
+  }
+  u.file = f
+
+  if err := u.load(); err != nil {
+    log.Println("URLStore", err)
+  }
   return u;
 }
 
 func addHandler(w http.ResponseWriter, r *http.Request) {
   url := r.FormValue("url")
   if url == "" {
-    //fmt.Fprintf(w, AddForm)
-    // fmt.Fprintf(w, "<h1>Add Url</h1>"+
-    //     "<form action=\"/add\" method=\"POST\">"+
-    //     "<input type=\"text\" name=\"url\">"+
-    //     "<input type=\"submit\" value=\"Add\">"+
-    //     "</form>")
     t, _ := template.ParseFiles("edit.html")
     t.Execute(w, nil)
     return
@@ -109,6 +124,31 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
   http.Redirect(w, r, url, http.StatusFound)
+}
+
+func (urlStore *URLStore) save(key, url string) error {
+  e := json.NewEncoder(urlStore.file)
+  return e.Encode(record{key, url})
+}
+
+func (urlStore *URLStore) load() error {
+  _, err := urlStore.file.Seek(0,0);
+  if err != nil {
+    return err
+  }
+  d := json.NewDecoder(urlStore.file)
+  var err1 error
+
+  for err1 == nil {
+    var r record
+    if err1 = d.Decode(&r); err1 == nil {
+      urlStore.Set(r.Key, r.URL)
+    }
+  }
+  if err1 == io.EOF {
+    return nil
+  }
+  return err1
 }
 
 func main() {
